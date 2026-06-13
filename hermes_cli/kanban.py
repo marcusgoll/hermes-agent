@@ -491,6 +491,34 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit JSON (structured) instead of the default human table",
     )
 
+    # --- drain (safe board maintenance) ---
+    p_drain = sub.add_parser(
+        "drain",
+        help="Plan or apply safe Kanban drain actions",
+    )
+    p_drain.add_argument(
+        "--class",
+        dest="drain_class",
+        choices=["review_packets"],
+        default="review_packets",
+        help="Drain class to run (default: review_packets)",
+    )
+    p_drain.add_argument(
+        "--dry-run",
+        dest="apply",
+        action="store_false",
+        default=False,
+        help="Report planned actions without mutation (default)",
+    )
+    p_drain.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="Apply safe drain actions",
+    )
+    p_drain.add_argument("--limit", type=int, default=None)
+    p_drain.add_argument("--json", action="store_true")
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -932,6 +960,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
             "diag":     _cmd_diagnostics,
+            "drain":    _cmd_drain,
             "link":     _cmd_link,
             "unlink":   _cmd_unlink,
             "claim":    _cmd_claim,
@@ -1793,6 +1822,43 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 if a.suggested:
                     print(f"       → {a.label}")
         print()
+    return 0
+
+
+def _cmd_drain(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_drain as kd
+
+    with kb.connect_closing() as conn:
+        report = kd.drain_review_packets(
+            conn,
+            apply=bool(getattr(args, "apply", False)),
+            limit=getattr(args, "limit", None),
+        )
+
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    mode = "dry-run" if report["dry_run"] else "apply"
+    summary = report["summary"]
+    print(f"Kanban drain ({report['class']}, {mode})")
+    print(
+        "  packets={total_packets} planned={planned} applied={applied} "
+        "already_applied={already_applied} refused={refused} skipped={skipped}".format(
+            **summary,
+        )
+    )
+    for action in report["actions"]:
+        line = (
+            f"  {action['status']:15s} {action['action']} "
+            f"source={action['source_task_id']} review={action['review_task_id']} "
+            f"id={action['drain_action_id']}"
+        )
+        if action.get("rework_task_id"):
+            line += f" rework={action['rework_task_id']}"
+        if action.get("reason"):
+            line += f" reason={action['reason']}"
+        print(line)
     return 0
 
 
